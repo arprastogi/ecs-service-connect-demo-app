@@ -272,8 +272,430 @@ Deploy your ECS services using this updated task definition. ECS Service Connect
 Would you like a **Terraform or CLI example** to automate the configuration? 🚀
 
 ----------------------------------------------------------
+----------------------------------------------------------
+
+# Redis 
+
+Deploying a **Python demo application** in **AWS ECS Fargate** with **AWS Redis Cache** involves several steps. Here’s a detailed step-by-step guide:  
+
+---
+
+## **Step 1: Setup AWS Environment**
+### **1.1 Install AWS CLI and Docker**
+Ensure you have AWS CLI and Docker installed on your local machine.  
+- Install AWS CLI: [AWS CLI Installation Guide](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html)  
+- Install Docker: [Docker Installation Guide](https://docs.docker.com/get-docker/)  
+- Install AWS CDK (optional for Infrastructure as Code):  
+  ```sh
+  npm install -g aws-cdk
+  ```
+
+### **1.2 Configure AWS CLI**
+Authenticate with AWS:  
+```sh
+aws configure
+```
+Enter the **AWS Access Key**, **Secret Key**, **Region**, and **Output Format**.
+
+---
+
+## **Step 2: Create a Python Demo Application**
+### **2.1 Create a New Python Project**
+```sh
+mkdir python-ecs-demo
+cd python-ecs-demo
+python3 -m venv venv
+source venv/bin/activate  # For Windows use: venv\Scripts\activate
+```
+### **2.2 Install Dependencies**
+```sh
+pip install flask redis
+```
+
+### **2.3 Create `app.py`**
+This application will connect to AWS Redis Cache (Elasticache) and store/retrieve data.
+```python
+from flask import Flask, request, jsonify
+import redis
+import os
+
+app = Flask(__name__)
+
+# Connect to Redis
+redis_host = os.getenv("REDIS_HOST", "localhost")
+redis_port = int(os.getenv("REDIS_PORT", 6379))
+
+redis_client = redis.StrictRedis(host=redis_host, port=redis_port, decode_responses=True)
+
+@app.route("/")
+def home():
+    return "Welcome to Python ECS Fargate Demo with Redis!"
+
+@app.route("/set-cache", methods=["POST"])
+def set_cache():
+    data = request.get_json()
+    key = data.get("key")
+    value = data.get("value")
+    if key and value:
+        redis_client.set(key, value)
+        return jsonify({"message": f"Cached key: {key} with value: {value}"}), 200
+    return jsonify({"error": "Invalid data"}), 400
+
+@app.route("/get-cache/<key>", methods=["GET"])
+def get_cache(key):
+    value = redis_client.get(key)
+    if value:
+        return jsonify({key: value}), 200
+    return jsonify({"error": "Key not found"}), 404
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+```
+
+---
+
+## **Step 3: Create a Docker Image**
+### **3.1 Create `Dockerfile`**
+```dockerfile
+# Use Python base image
+FROM python:3.9
+
+# Set working directory
+WORKDIR /app
+
+# Copy application files
+COPY . /app
+
+# Install dependencies
+RUN pip install flask redis
+
+# Expose port
+EXPOSE 5000
+
+# Start application
+CMD ["python", "app.py"]
+```
+
+### **3.2 Build and Test Locally**
+```sh
+docker build -t python-ecs-demo .
+docker run -p 5000:5000 --env REDIS_HOST=localhost python-ecs-demo
+```
+Test the API with:
+```sh
+curl -X POST "http://localhost:5000/set-cache" -H "Content-Type: application/json" -d '{"key": "message", "value": "Hello from ECS!"}'
+curl -X GET "http://localhost:5000/get-cache/message"
+```
+
+---
+
+## **Step 4: Push Docker Image to AWS ECR**
+### **4.1 Create an AWS ECR Repository**
+```sh
+aws ecr create-repository --repository-name python-ecs-demo
+```
+Get the repository URL:
+```sh
+aws ecr describe-repositories --repository-names python-ecs-demo
+```
+
+### **4.2 Authenticate and Push Image**
+```sh
+aws ecr get-login-password | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com
+docker tag python-ecs-demo <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/python-ecs-demo
+docker push <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/python-ecs-demo
+```
+
+---
+
+## **Step 5: Deploy AWS ElastiCache Redis**
+### **5.1 Create an ElastiCache Redis Cluster**
+```sh
+aws elasticache create-cache-cluster --cache-cluster-id my-redis --engine redis --cache-node-type cache.t3.micro --num-cache-nodes 1 --security-group-ids <SECURITY_GROUP_ID> --subnet-group-name <SUBNET_GROUP_NAME>
+```
+Get the Redis endpoint:
+```sh
+aws elasticache describe-cache-clusters --cache-cluster-id my-redis --show-cache-node-info
+```
+Use **Primary Endpoint** as `REDIS_HOST`.
+
+---
+
+## **Step 6: Deploy Application to AWS ECS Fargate**
+### **6.1 Create ECS Cluster**
+```sh
+aws ecs create-cluster --cluster-name python-ecs-cluster
+```
+
+### **6.2 Create a Task Definition**
+Create `task-def.json`:
+```json
+{
+  "family": "python-ecs-task",
+  "networkMode": "awsvpc",
+  "executionRoleArn": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "python-container",
+      "image": "<AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/python-ecs-demo",
+      "memory": 512,
+      "cpu": 256,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "hostPort": 5000
+        }
+      ],
+      "environment": [
+        {
+          "name": "REDIS_HOST",
+          "value": "<REDIS_ENDPOINT>"
+        },
+        {
+          "name": "REDIS_PORT",
+          "value": "6379"
+        }
+      ]
+    }
+  ],
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512"
+}
+```
+Register the task definition:
+```sh
+aws ecs register-task-definition --cli-input-json file://task-def.json
+```
+
+### **6.3 Run the Task on Fargate**
+```sh
+aws ecs run-task --cluster python-ecs-cluster --launch-type FARGATE --task-definition python-ecs-task --network-configuration "awsvpcConfiguration={subnets=[<SUBNET_ID>],securityGroups=[<SECURITY_GROUP_ID>],assignPublicIp=\"ENABLED\"}"
+```
+
+---
+
+## **Step 7: Test the Application**
+Get the **public IP** of the running ECS task:
+```sh
+aws ecs describe-tasks --cluster python-ecs-cluster --tasks <TASK_ID>
+```
+Test API with:
+```sh
+curl -X POST "http://<ECS_PUBLIC_IP>:5000/set-cache" -H "Content-Type: application/json" -d '{"key": "greeting", "value": "Hello from Fargate!"}'
+curl -X GET "http://<ECS_PUBLIC_IP>:5000/get-cache/greeting"
+```
+
+---
+
+## **Step 8: Cleanup Resources**
+To delete resources:
+```sh
+aws ecs delete-cluster --cluster python-ecs-cluster
+aws elasticache delete-cache-cluster --cache-cluster-id my-redis
+aws ecr delete-repository --repository-name python-ecs-demo --force
+```
+
+---
+
+### **Conclusion**
+This guide walked through:
+✅ Creating a **Flask API**  
+✅ Using **AWS ElastiCache Redis**  
+✅ **Dockerizing** and **Pushing to ECR**  
+✅ Deploying to **ECS Fargate**  
+
+Would you like help automating this with **Terraform or AWS CDK**? 🚀
 
 
+
+To **view and manage data** stored in **AWS ElastiCache Redis** via your Python demo application, follow these steps:
+
+---
+
+## ✅ **Step 1: Connect to AWS Redis Cache from Local Machine**
+You can interact with Redis Cache directly using a Redis CLI.
+
+### **1.1 Install Redis CLI (if not installed)**
+- For Linux:
+```bash
+sudo apt update && sudo apt install redis-tools
+```
+- For Mac:
+```bash
+brew install redis
+```
+- For Windows:
+Download from [Redis GitHub](https://github.com/microsoftarchive/redis/releases).
+
+---
+
+### **1.2 Get Redis Endpoint**
+Run this command to get the Redis endpoint:
+```bash
+aws elasticache describe-cache-clusters --cache-cluster-id my-redis --show-cache-node-info
+```
+Look for the `Endpoint.Address` and `Port` fields:
+```
+"Endpoint": {
+    "Address": "my-redis.xyz.cache.amazonaws.com",
+    "Port": 6379
+}
+```
+Take note of the `Address` and `Port`.
+
+---
+
+### **1.3 Connect to Redis Using CLI**
+```bash
+redis-cli -h my-redis.xyz.cache.amazonaws.com -p 6379
+```
+✅ **To verify connection:**
+```bash
+ping
+```
+You should get:
+```
+PONG
+```
+
+---
+
+## ✅ **Step 2: View Data in Redis Using CLI**
+### **2.1 List All Keys**
+```bash
+keys *
+```
+Example output:
+```
+1) "greeting"
+2) "message"
+```
+
+### **2.2 Retrieve Value of a Key**
+```bash
+get greeting
+```
+Example output:
+```
+"Hello from Fargate!"
+```
+
+### **2.3 Check Key Expiry (TTL)**
+```bash
+ttl greeting
+```
+If the key does not have an expiry, it returns `-1`.
+
+---
+
+## ✅ **Step 3: Viewing Cache from Python Application**
+You can also retrieve and view cache data through the Flask API endpoints.
+
+### **3.1 Get Cached Data via API**
+Use the `GET /get-cache/<key>` endpoint:
+```bash
+curl -X GET "http://<ECS_PUBLIC_IP>:5000/get-cache/greeting"
+```
+Example response:
+```json
+{
+  "greeting": "Hello from Fargate!"
+}
+```
+
+### **3.2 List All Keys Using Python Script**
+If you want to list all keys via Python, modify `app.py` by adding this route:
+```python
+@app.route("/list-keys", methods=["GET"])
+def list_keys():
+    keys = redis_client.keys('*')
+    return jsonify({"keys": keys}), 200
+```
+Access it by calling:
+```bash
+curl -X GET "http://<ECS_PUBLIC_IP>:5000/list-keys"
+```
+Response:
+```json
+{
+  "keys": ["greeting", "message"]
+}
+```
+
+---
+
+## ✅ **Step 4: Clear or Delete Keys in Redis**
+### **4.1 Delete a Specific Key**
+```bash
+del greeting
+```
+Response:
+```
+(integer) 1
+```
+
+### **4.2 Flush All Keys (Use with Caution)**
+```bash
+flushall
+```
+Response:
+```
+OK
+```
+
+---
+
+## ✅ **Step 5: Monitor Redis Cache Metrics**
+To view Redis performance and usage:
+1. Open **AWS Management Console**.
+2. Go to **ElastiCache > Redis Clusters > my-redis**.
+3. Click **Monitoring** to view metrics such as:
+   - CPU Utilization
+   - Memory Usage
+   - Number of Connections
+   - Cache Hits/Misses
+
+---
+
+## 🚀 **Bonus: Automate Data Retrieval with a Python Script**
+If you need to manage or automate cache data retrieval, create a script:
+```python
+import redis
+
+redis_host = "my-redis.xyz.cache.amazonaws.com"
+redis_port = 6379
+
+# Connect to Redis
+client = redis.StrictRedis(host=redis_host, port=redis_port, decode_responses=True)
+
+# List all keys
+keys = client.keys('*')
+print("Keys in Redis:", keys)
+
+# Get all key-value pairs
+for key in keys:
+    value = client.get(key)
+    print(f"{key}: {value}")
+```
+Run the script:
+```bash
+python cache_viewer.py
+```
+
+---
+
+## 🎉 **Summary**
+✅ List and retrieve cache keys via Redis CLI  
+✅ Retrieve cache data using Flask API endpoints  
+✅ Monitor Redis Cache usage in AWS Console  
+✅ Delete or flush cache keys when needed  
+
+Let me know if you’d like to automate Redis cache management or add logging for cache hits and misses! 🚀
+
+
+-----------------------------------------------------------------
 # ecs-service-connect-demo-app
 ecs-service-connect-demo-app
 
