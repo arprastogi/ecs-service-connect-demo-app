@@ -764,3 +764,64 @@ Edit
     }
   ]
 }
+---------------------------------------------------------------------------------------------------------------------------------
+
+---------------------------------------------------------------------------------------------------------------------------------
+
+
+# 🛡️ ECS Service Connect with TLS/mTLS Chaos Engineering and Log Forwarding
+
+This repository demonstrates how to secure ECS Service Connect with TLS/mTLS, configure ECS tasks for secure communications, and integrate AWS Fault Injection Simulator (FIS) for chaos testing scenarios. It also includes steps to forward ECS Service Connect logs to a Logstash HTTP endpoint on port `5049`.
+
+---
+
+## 📚 Table of Contents
+- [Overview](#overview)
+- [Chaos Engineering Test Cases](#chaos-engineering-test-cases)
+- [Enabling ECS Service Connect Logs to Logstash](#enabling-ecs-service-connect-logs-to-logstash)
+- [Configuring AWS Fault Injection Simulator (FIS)](#configuring-aws-fault-injection-simulator-fis)
+- [Monitoring and Observability](#monitoring-and-observability)
+- [Next Steps](#next-steps)
+
+---
+
+## 🎯 Overview
+This project covers the following objectives:
+
+✅ Enable TLS/mTLS communication between ECS services using Service Connect.  
+✅ Implement Chaos Engineering with AWS FIS to test TLS/mTLS resilience.  
+✅ Forward ECS Service Connect logs to a Logstash HTTP endpoint using Fluent Bit.  
+
+---
+
+## 🔥 Chaos Engineering Test Cases
+
+### 📊 Detailed Chaos Test Scenarios
+
+| ⚡️ Experiment                    | 📝 Hypothesis                                                                 | 🎯 Target                | ⏱️ Duration | 🔍 Test Steps                                                                                   | ⚡️ Expected Outcome                                 |
+|-----------------------------------|------------------------------------------------------------------------------|-------------------------|------------|------------------------------------------------------------------------------------------------|----------------------------------------------------|
+| 🔥 **Certificate Expiry Test**     | Expired certs should prevent TLS/mTLS connection.                            | ECS Task/Service        | 5 mins     | 1. Modify cert to expire.<br>2. Restart ECS task.<br>3. Attempt connection via Service Connect. | ❌ Connection denied with cert error.               |
+| 🔥 **Invalid Client Certificate**  | Connection should be denied with invalid client certificate.                 | ECS Task                | 5 mins     | 1. Replace client cert with invalid cert.<br>2. Restart task.<br>3. Test mTLS call.             | ❌ Connection rejected due to invalid cert.         |
+| 🔥 **Revoked Certificate Test**    | Revoked certificates should trigger TLS handshake failure.                   | ECS Task                | 5 mins     | 1. Revoke client cert.<br>2. Use Certificate Revocation List (CRL).<br>3. Attempt connection.   | ❌ Connection fails with cert revocation error.     |
+| 🔥 **Certificate Rotation Test**   | Service should automatically pick up new certs.                              | ECS Service             | 5 mins     | 1. Rotate cert in ACM/Secrets Manager.<br>2. Restart ECS service.<br>3. Test secure connection. | ✅ Connection succeeds with new certs.              |
+| 🔥 **DNS Spoofing/MITM Test**       | ECS Service Connect should reject spoofed DNS responses.                     | Route 53 Resolver       | 5 mins     | 1. Alter DNS records to simulate MITM.<br>2. Attempt connection.<br>3. Check logs.              | ❌ DNS spoofed requests rejected.                   |
+| 🔥 **TLS Downgrade Attack Test**   | Downgraded HTTP connection should be rejected.                               | ECS Task/Service        | 5 mins     | 1. Attempt to communicate over HTTP.<br>2. Observe connection behavior.                        | ❌ HTTP request rejected.                           |
+| 🔥 **Backend Service Unavailability** | Failover or retries should occur when backend becomes unavailable.            | ECS Service             | 10 mins    | 1. Stop backend tasks.<br>2. Observe ECS Service Connect retries or failover.                   | ✅ Requests routed to healthy targets.              |
+| 🔥 **Simulate High TLS Load**      | TLS connections should not degrade under high traffic.                       | ECS Cluster             | 15 mins    | 1. Simulate high concurrent requests.<br>2. Observe latency and connection stability.           | ✅ No degradation in performance.                   |
+| 🔥 **Task Certificate Hot Reload** | ECS tasks should reload new certificates without downtime.                   | ECS Task                | 5 mins     | 1. Update certs.<br>2. Restart ECS tasks.<br>3. Verify mTLS connection.                        | ✅ Zero downtime certificate reload.                |
+| 🔥 **Backend Service Certificate Mismatch** | Cert mismatch should trigger connection failure.                       | ECS Service             | 5 mins     | 1. Use mismatched cert on backend.<br>2. Test connection from frontend.                        | ❌ Connection denied due to mismatch.               |
+| 🔥 **ECS Cluster Failure Test**    | ECS Service Connect should recover automatically after cluster failure.      | ECS Cluster             | 10 mins    | 1. Simulate ECS cluster failure.<br>2. Restart tasks.<br>3. Observe Service Connect recovery.   | ✅ Service Connect reconnects post-recovery.        |
+
+---
+
+## 📡 Enabling ECS Service Connect Logs to Logstash
+
+### 🛠️ Step 1: Enable ECS Service Connect Logs in Task Definition
+
+```json
+"firelensConfiguration": {
+  "type": "fluentbit",
+  "options": {
+    "enable-ecs-log-metadata": "true"
+  }
+}
